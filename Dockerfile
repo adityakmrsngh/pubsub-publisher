@@ -18,7 +18,7 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 
 # Variables de entorno requeridas (deben ser proporcionadas en runtime)
-ENV GOOGLE_CLOUD_PROJECT="keen-airlock-469010-i0"
+ENV GOOGLE_CLOUD_PROJECT = "keen-airlock-469010-i0"
 ENV TOPIC_ID="message-processing-inbound-queue"
 
 # Para autenticación con service account key file (opcional)
