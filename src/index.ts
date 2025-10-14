@@ -120,7 +120,10 @@ app.get(WEBHOOK_ENDPOINTS.WEBHOOK, (req, res) => {
     logger.info('Webhook verificado correctamente');
     res.status(HTTP_STATUS.OK).send(challenge);
   } else {
-    logger.warn('Verificación de webhook fallida', { mode, token });
+    logger.warn({ 
+      mode: mode as string, 
+      token: token as string 
+    }, 'Verificación de webhook fallida');
     res.status(HTTP_STATUS.FORBIDDEN).json({ error: 'Token de verificación inválido' });
   }
 });
