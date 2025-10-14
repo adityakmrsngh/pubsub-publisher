@@ -24,10 +24,13 @@ if (
 
 export const pubsub = new PubSub({
   projectId,
-  credentials: {
-    client_email: process.env.GOOGLE_CLOUD_EMAIL || '',
-    private_key: process.env.GOOGLE_CLOUD_PRIVATE_KEY?.replace(/\\n/g, '\n') || '',
-  },
+  // Only provide credentials if both email and private key are available
+  ...(process.env.GOOGLE_CLOUD_EMAIL && process.env.GOOGLE_CLOUD_PRIVATE_KEY ? {
+    credentials: {
+      client_email: process.env.GOOGLE_CLOUD_EMAIL,
+      private_key: process.env.GOOGLE_CLOUD_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    }
+  } : {})
 });
 
 export async function publishJson(
