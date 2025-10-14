@@ -2,7 +2,7 @@ import express from 'express';
 import { z } from 'zod';
 import { publishJson } from './pubsub.js';
 import { logger } from './logger.js';
-import { v4 as uuidv4 } from 'uuid';
+import { WEBHOOK_ENDPOINTS, HTTP_STATUS, WHATSAPP_EVENTS, ENV_VARS } from './constants.js';
 
 const app = express();
 app.use(express.json());
@@ -106,42 +106,44 @@ const WhatsAppWebhookSchema = z.object({
   entry: z.array(WhatsAppEntrySchema),
 });
 
-app.get('/healthz', (_req, res) => {
-  res.status(200).send('ok');
+app.get(WEBHOOK_ENDPOINTS.HEALTH, (_req, res) => {
+  res.status(HTTP_STATUS.OK).send('ok');
 });
 
-app.post('/publish', async (req, res) => {
+// WhatsApp webhook verification endpoint
+app.get(WEBHOOK_ENDPOINTS.WEBHOOK, (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  if (mode === 'subscribe' && token === ENV_VARS.WEBHOOK_VERIFY_TOKEN) {
+    logger.info('Webhook verificado correctamente');
+    res.status(HTTP_STATUS.OK).send(challenge);
+  } else {
+    logger.warn('Verificación de webhook fallida', { mode, token });
+    res.status(HTTP_STATUS.FORBIDDEN).json({ error: 'Token de verificación inválido' });
+  }
+});
+
+app.post(WEBHOOK_ENDPOINTS.WEBHOOK, async (req, res) => {
   const parse = WhatsAppWebhookSchema.safeParse(req.body);
   if (!parse.success) {
-    console.log(parse.error);
+    logger.error({ error: parse.error }, 'Body inválido');
     return res
-      .status(400)
+      .status(HTTP_STATUS.BAD_REQUEST)
       .json({ error: 'Body inválido', details: parse.error.flatten() });
   }
 
   const payload = parse.data;
 
-  // Generate idempotency key based on available data
-  let idempotencyKey = uuidv4();
-  const change = payload.entry[0].changes[0].value;
-  
-  if (change.messages && change.messages.length > 0) {
-    idempotencyKey = change.messages[0].id;
-  } else if (change.statuses && change.statuses.length > 0) {
-    idempotencyKey = change.statuses[0].id;
-  }
-
-  const eventType = 'whatsapp';
-
   try {
     const messageId = await publishJson(payload, {
-      eventType,
-      ...(idempotencyKey ? { idempotencyKey } : {}),
+      eventType: WHATSAPP_EVENTS.EVENT_TYPE,
     });
-    res.status(202).json({ messageId });
+    res.status(HTTP_STATUS.ACCEPTED).json({ messageId });
   } catch (err: any) {
     logger.error({ err }, 'Error publicando en Pub/Sub');
-    res.status(500).json({ error: 'Error publicando el mensaje' });
+    res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({ error: 'Error publicando el mensaje' });
   }
 });
 
@@ -151,5 +153,10 @@ process.on('unhandledRejection', (e) =>
   logger.error(e as any, 'unhandledRejection')
 );
 
-const port = process.env.PORT || 8080;
+// Validate required environment variables on startup
+if (!ENV_VARS.WEBHOOK_VERIFY_TOKEN) {
+  logger.warn('WEBHOOK_VERIFY_TOKEN no está configurado - la verificación de webhook fallará');
+}
+
+const port = ENV_VARS.PORT;
 app.listen(port, () => logger.info(`Publisher escuchando en :${port}`));
