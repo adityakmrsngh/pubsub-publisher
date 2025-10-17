@@ -1,110 +1,11 @@
 import express from 'express';
-import { z } from 'zod';
 import { publishJson } from './pubsub.js';
 import { logger } from './logger.js';
 import { WEBHOOK_ENDPOINTS, HTTP_STATUS, WHATSAPP_EVENTS, ENV_VARS } from './constants.js';
+import { WhatsAppWebhookSchema } from './schemas/whatsapp.schema.js';
 
 const app = express();
 app.use(express.json());
-
-// WhatsApp webhook payload schemas
-const WhatsAppContactSchema = z.object({
-  profile: z.object({
-    name: z.string(),
-  }),
-  wa_id: z.string(),
-});
-
-const WhatsAppMetadataSchema = z.object({
-  phone_number_id: z.string(),
-  display_phone_number: z.string(),
-});
-
-const WhatsAppImageSchema = z.object({
-  sha256: z.string(),
-  mime_type: z.string(),
-  id: z.string(),
-});
-
-const WhatsAppVideoSchema = z.object({
-  id: z.string(),
-  mime_type: z.string(),
-  sha256: z.string(),
-});
-
-const WhatsAppDocumentSchema = z.object({
-  filename: z.string(),
-  mime_type: z.string(),
-  id: z.string(),
-  sha256: z.string(),
-});
-
-const WhatsAppReactionSchema = z.object({
-  emoji: z.string(),
-  message_id: z.string(),
-});
-
-const WhatsAppTextSchema = z.object({
-  body: z.string(),
-});
-
-const WhatsAppPricingSchema = z.object({
-  billable: z.boolean(),
-  category: z.string(),
-  type: z.string(),
-  pricing_model: z.string(),
-});
-
-const WhatsAppConversationSchema = z.object({
-  id: z.string(),
-  origin: z.object({
-    type: z.string(),
-  }),
-});
-
-const WhatsAppStatusSchema = z.object({
-  id: z.string(),
-  status: z.enum(['sent', 'delivered', 'read', 'failed']),
-  pricing: WhatsAppPricingSchema,
-  recipient_id: z.string(),
-  timestamp: z.string(),
-  conversation: WhatsAppConversationSchema,
-});
-
-const WhatsAppMessageSchema = z.object({
-  id: z.string(),
-  type: z.enum(['text', 'image', 'video', 'document', 'reaction']),
-  timestamp: z.string(),
-  from: z.string(),
-  text: WhatsAppTextSchema.optional(),
-  image: WhatsAppImageSchema.optional(),
-  video: WhatsAppVideoSchema.optional(),
-  document: WhatsAppDocumentSchema.optional(),
-  reaction: WhatsAppReactionSchema.optional(),
-});
-
-const WhatsAppValueSchema = z.object({
-  messaging_product: z.string(),
-  metadata: WhatsAppMetadataSchema,
-  contacts: z.array(WhatsAppContactSchema).optional(),
-  messages: z.array(WhatsAppMessageSchema).optional(),
-  statuses: z.array(WhatsAppStatusSchema).optional(),
-});
-
-const WhatsAppChangeSchema = z.object({
-  field: z.string(),
-  value: WhatsAppValueSchema,
-});
-
-const WhatsAppEntrySchema = z.object({
-  id: z.string(),
-  changes: z.array(WhatsAppChangeSchema),
-});
-
-const WhatsAppWebhookSchema = z.object({
-  object: z.string(),
-  entry: z.array(WhatsAppEntrySchema),
-});
 
 app.get(WEBHOOK_ENDPOINTS.HEALTH, (_req, res) => {
   res.status(HTTP_STATUS.OK).send('ok');
@@ -129,24 +30,61 @@ app.get(WEBHOOK_ENDPOINTS.WEBHOOK, (req, res) => {
 });
 
 app.post(WEBHOOK_ENDPOINTS.WEBHOOK, async (req, res) => {
+  // Log incoming webhook for debugging
+  logger.debug({ 
+    body: req.body,
+    headers: req.headers 
+  }, 'Webhook recibido');
+
   const parse = WhatsAppWebhookSchema.safeParse(req.body);
+  
   if (!parse.success) {
-    logger.error({ error: parse.error }, 'Body inválido');
+    // Enhanced error logging with actual payload
+    logger.error({ 
+      error: parse.error,
+      zodErrors: parse.error.errors,
+      receivedPayload: req.body,
+      payloadType: typeof req.body,
+      payloadKeys: req.body ? Object.keys(req.body) : []
+    }, 'Validación de webhook fallida');
+    
     return res
       .status(HTTP_STATUS.BAD_REQUEST)
-      .json({ error: 'Body inválido', details: parse.error.flatten() });
+      .json({ 
+        error: 'Body inválido', 
+        details: parse.error.flatten(),
+        message: 'El payload del webhook no cumple con el esquema esperado de WhatsApp API v23.0'
+      });
   }
 
   const payload = parse.data;
+
+  // Log successful validation
+  logger.info({ 
+    entryCount: payload.entry.length,
+    messageTypes: payload.entry.flatMap(e => 
+      e.changes.flatMap(c => 
+        c.value.messages?.map(m => m.type) || []
+      )
+    ),
+    hasStatuses: payload.entry.some(e => 
+      e.changes.some(c => c.value.statuses && c.value.statuses.length > 0)
+    )
+  }, 'Webhook validado correctamente');
 
   try {
     const messageId = await publishJson(payload, {
       eventType: WHATSAPP_EVENTS.EVENT_TYPE,
     });
+    
+    logger.info({ messageId }, 'Mensaje publicado en Pub/Sub exitosamente');
     res.status(HTTP_STATUS.ACCEPTED).json({ messageId });
   } catch (err: any) {
-    logger.error({ err }, 'Error publicando en Pub/Sub');
-    res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({ error: 'Error publicando el mensaje' });
+    logger.error({ err, payload }, 'Error publicando en Pub/Sub');
+    res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({ 
+      error: 'Error publicando el mensaje',
+      message: 'No se pudo publicar el mensaje en Pub/Sub'
+    });
   }
 });
 
